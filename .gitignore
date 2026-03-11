@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+
+# Entorno
+.env
+
+# Archivos subidos
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+logs/*
+!logs/.gitkeep
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Base de datos
+*.db
+*.sqlite
+
+# Temporal
+*.tmp
+*.bak
+~$*

@@ -1,0 +1,54 @@
+# ⚡ INSTALACIÓN RÁPIDA - 5 MINUTOS
+
+## 1. Requisitos (Instalar si no tienes)
+- Python 3.8+: https://www.python.org/
+- SQL Server Express: https://www.microsoft.com/sql-server
+- ODBC Driver 17: https://docs.microsoft.com/sql/connect/odbc/
+
+## 2. Base de Datos
+```sql
+-- Abrir SQL Server Management Studio
+-- Ejecutar: database_setup.sql
+-- Verificar: ✅ Base de datos "consolidador_rem" creada
+```
+
+## 3. Configurar
+```bash
+# Windows
+copy .env.example .env
+
+# Linux/Mac
+cp .env.example .env
+
+# Editar .env:
+DB_SERVER=localhost
+DB_PASSWORD=tu-password
+SECRET_KEY=clave-super-segura-aleatoria
+```
+
+## 4. Iniciar
+```bash
+# Windows: Doble clic
+start.bat
+
+# Linux/Mac
+chmod +x start.sh
+./start.sh
+```
+
+## 5. Verificar
+- Abrir: http://localhost:8000/docs
+- Login con: admin@maipu.cl / admin
+- ✅ Si ves Swagger UI = TODO CORRECTO
+
+---
+
+## Primer Uso
+1. Cambiar password de admin
+2. Crear programas si no existen
+3. Registrar usuarios encargados
+4. Frontend ya puede consumir API
+
+---
+
+**¿Problemas?** Ver README.md completo
