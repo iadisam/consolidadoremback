@@ -213,7 +213,7 @@ const response = await fetch('http://localhost:8000/archivos/upload', {
 → Reinstalar Python marcando "Add to PATH"
 
 ### Error: "pyodbc.Error: Data source name not found"
-→ Instalar ODBC Driver 17 para SQL Server
+→ Instalar ODBC Driver 18 para SQL Server
 
 ### Error: "Login failed for user"
 → Verificar credenciales en .env
@@ -295,7 +295,7 @@ Si ya tienes usuarios en tu BD con SHA256, tienes dos opciones:
 
 - [ ] Python 3.8+ instalado
 - [ ] SQL Server instalado y corriendo
-- [ ] ODBC Driver 17 instalado
+- [ ] ODBC Driver 18 instalado
 - [ ] Base de datos creada (database_setup.sql ejecutado)
 - [ ] Archivo .env configurado con credenciales
 - [ ] Dependencias instaladas (pip install -r requirements.txt)

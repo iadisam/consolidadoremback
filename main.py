@@ -51,7 +51,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"
 
 # Configuración SQL Server
 DB_CONFIG = {
-    "DRIVER": os.getenv("DB_DRIVER", "{ODBC Driver 17 for SQL Server}"),
+    "DRIVER": os.getenv("DB_DRIVER", "{ODBC Driver 18 for SQL Server}"),
     "SERVER": os.getenv("DB_SERVER"),
     "DATABASE": os.getenv("DB_NAME"),
     "UID": os.getenv("DB_USER"),
