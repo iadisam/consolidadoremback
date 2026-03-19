@@ -271,15 +271,15 @@ def health_check():
 
 @app.get("/plantilla/download")
 def descargar_plantilla():
-    """Descargar plantilla base SA_26_V1.1.xlsm"""
-    plantilla_path = Path("SA_26_V1.1.xlsm")
+    """Descargar plantilla base SA_26_V1.2.xlsm"""
+    plantilla_path = Path("SA_26_V1.2.xlsm")
     
     if not plantilla_path.exists():
-        raise HTTPException(status_code=404, detail="Plantilla no encontrada. Coloque SA_26_V1.1.xlsm en la raíz del proyecto")
+        raise HTTPException(status_code=404, detail="Plantilla no encontrada. Coloque SA_26_V1.2.xlsm en la raíz del proyecto")
     
     return FileResponse(
         path=str(plantilla_path),
-        filename="SA_26_V1.1.xlsm",
+        filename="SA_26_V1.2.xlsm",
         media_type="application/vnd.ms-excel.sheet.macroEnabled.12"
     )
 
