@@ -56,6 +56,8 @@ DB_CONFIG = {
     "DATABASE": os.getenv("DB_NAME"),
     "UID": os.getenv("DB_USER"),
     "PWD": os.getenv("DB_PASSWORD"),
+    "TrustServerCertificate": "yes", 
+    "Encrypt": "yes",
 }
 
 # Validar variables requeridas
