@@ -4,7 +4,7 @@ FastAPI + SQL Server + pyodbc
 Versión: 2.5.0
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status, Form
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +29,7 @@ load_dotenv()
 # ==================== CONFIGURACIÓN ====================
 app = FastAPI(
     title="API Consolidador REM",
-    description="API para gestión de archivos REM y consolidación con períodos mensuales",
+    description="API para gestión de archivos REM y consolidación",
     version="2.5.0"
 )
 
@@ -50,56 +50,70 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))
 
-# Configuración Base de Datos
+# Configuración SQL Server
 DB_CONFIG = {
-    "DRIVER": os.getenv("DB_DRIVER", "ODBC Driver 18 for SQL Server"),
-    "SERVER": os.getenv("DB_SERVER", "172.25.5.70"),
-    "DATABASE": os.getenv("DB_NAME", "Bi_Test"),
-    "UID": os.getenv("DB_USER", "Bi_Estadistica"),
-    "PWD": os.getenv("DB_PASSWORD", "EstadisticaBi2025.7"),
-    "TrustServerCertificate": "yes",
-    "Encrypt": "no"
+    "DRIVER": os.getenv("DB_DRIVER", "{ODBC Driver 18 for SQL Server}"),
+    "SERVER": os.getenv("DB_SERVER"),
+    "DATABASE": os.getenv("DB_NAME"),
+    "UID": os.getenv("DB_USER"),
+    "PWD": os.getenv("DB_PASSWORD"),
+    "TrustServerCertificate": "yes", 
+    "Encrypt": "yes",
 }
+
+# Validar variables requeridas
+required_vars = ["DB_SERVER", "DB_NAME", "DB_USER", "DB_PASSWORD"]
+missing_vars = [var for var in required_vars if not os.getenv(var)]
+if missing_vars:
+    raise ValueError(f"❌ ERROR: Variables faltantes en .env: {', '.join(missing_vars)}")
+
+# Mostrar configuración (sin password)
+print("="*60)
+print(" CONFIGURACIÓN DE BASE DE DATOS:")
+print(f"   SERVER: {DB_CONFIG['SERVER']}")
+print(f"   DATABASE: {DB_CONFIG['DATABASE']}")
+print(f"   USER: {DB_CONFIG['UID']}")
+print(f"   PASSWORD: {'*' * len(DB_CONFIG['PWD']) if DB_CONFIG['PWD'] else 'NO CONFIGURADA'}")
+print("="*60)
 
 # Directorio de archivos
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Directorio temporal para validación
+# Directorio temporal
 TEMP_UPLOAD_DIR = Path("temp_uploads")
 TEMP_UPLOAD_DIR.mkdir(exist_ok=True)
 
 # Security
 security = HTTPBearer()
 
-print("============================================================")
-print("🚀 API CONSOLIDADOR REM v2.5.0")
-print("============================================================")
-print("📊 CONFIGURACIÓN DE BASE DE DATOS:")
-print(f"   SERVER: {DB_CONFIG['SERVER']}")
-print(f"   DATABASE: {DB_CONFIG['DATABASE']}")
-print(f"   DRIVER: {DB_CONFIG['DRIVER']}")
-print("============================================================")
+# ====================MODELOS PYDANTIC ====================
 
-# ==================== MODELOS PYDANTIC ====================
+class ProgramaBase(BaseModel):
+    nombre: str
 
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
+class ProgramaCreate(ProgramaBase):
+    pass
 
-class UserRegister(BaseModel):
+class Programa(ProgramaBase):
+    id: int
+    activo: bool
+    
+    class Config:
+        from_attributes = True
+
+class UsuarioCreate(BaseModel):
     nombre: str
     email: EmailStr
     password: str
     rol: str
     programa_id: Optional[int] = None
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    user: dict
+class UsuarioLogin(BaseModel):
+    email: EmailStr
+    password: str
 
-class UserInfo(BaseModel):
+class Usuario(BaseModel):
     id: int
     nombre: str
     email: str
@@ -112,89 +126,102 @@ class UserInfo(BaseModel):
     class Config:
         from_attributes = True
 
-class ArchivoUpload(BaseModel):
-    programa_id: int
-
-class ArchivoInfo(BaseModel):
-    id: int
-    usuario_id: int
-    programa_id: int
-    nombre_archivo: str
-    estado: str
-    observaciones: Optional[str]
-    fecha_subida: datetime
-    fecha_validacion: Optional[datetime]
-    validado_por: Optional[int]
-    activo: bool
-    usuario_nombre: str
-    programa_nombre: str
-    validado_por_nombre: Optional[str]
-    periodo: str
-    
-    class Config:
-        from_attributes = True
-
 class ArchivoValidar(BaseModel):
     archivo_id: int
     estado: str
     observaciones: Optional[str] = None
 
-class ConsolidacionCreate(BaseModel):
+class ConsolidarRequest(BaseModel):
     archivos_ids: List[int]
     periodo: str
 
 class ConsolidacionInfo(BaseModel):
     id: int
     nombre_archivo: str
-    ruta_archivo: str
-    fecha: datetime
     archivos_count: int
     creado_por: int
-    creado_por_nombre: str
+    fecha: datetime
     periodo: str
+    creado_por_nombre: str
     
     class Config:
         from_attributes = True
 
-class ProgramaInfo(BaseModel):
-    id: int
-    nombre: str
-    codigo: Optional[str]
-    
-    class Config:
-        from_attributes = True
-
-# ==================== FUNCIONES HELPER ====================
+# ==================== UTILIDADES ====================
 
 def get_db_connection():
-    """Establecer conexión con SQL Server"""
+    """Crea conexión a SQL Server"""
     try:
-        conn_str = (
-            f"DRIVER={{{DB_CONFIG['DRIVER']}}};"
-            f"SERVER={DB_CONFIG['SERVER']};"
-            f"DATABASE={DB_CONFIG['DATABASE']};"
-            f"UID={DB_CONFIG['UID']};"
-            f"PWD={DB_CONFIG['PWD']};"
-            f"TrustServerCertificate={DB_CONFIG['TrustServerCertificate']};"
-            f"Encrypt={DB_CONFIG['Encrypt']};"
-        )
+        conn_str = ";".join([f"{k}={v}" for k, v in DB_CONFIG.items()])
         conn = pyodbc.connect(conn_str)
         return conn
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error de conexión a BD: {str(e)}")
+        print(f"❌ Error conectando a base de datos: {e}")
+        raise HTTPException(status_code=500, detail=f"Error de conexión a base de datos: {str(e)}")
+
+def hash_password(password: str) -> str:
+    """Hashea password con bcrypt"""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verifica password con bcrypt"""
+    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+
+def create_access_token(data: dict):
+    """Crea JWT token"""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def decode_token(token: str):
+    """Decodifica JWT token"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expirado")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Obtener usuario actual desde token"""
+    token = credentials.credentials
+    payload = decode_token(token)
+    
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT u.id, u.nombre, u.email, u.rol, u.programa_id, u.activo, 
+               p.nombre as programa_nombre
+        FROM usuarios u
+        LEFT JOIN programas p ON u.programa_id = p.id
+        WHERE u.id = ?
+    """, user_id)
+    
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not row[5]:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado o inactivo")
+    
+    return {
+        "id": row[0],
+        "nombre": row[1],
+        "email": row[2],
+        "rol": row[3],
+        "programa_id": row[4],
+        "programa_nombre": row[6]
+    }
 
 def registrar_log(usuario_id: int, accion: str, detalle: str = None, 
                   archivo_id: int = None, consolidacion_id: int = None):
-    """
-    Registrar actividad en log
-    
-    Args:
-        usuario_id: ID del usuario que realiza la acción
-        accion: Tipo de acción (subir, validar, rechazar, consolidar, etc.)
-        detalle: Descripción detallada de la acción
-        archivo_id: ID del archivo relacionado (opcional)
-        consolidacion_id: ID de la consolidación relacionada (opcional)
-    """
+    """Registra actividad en log"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -213,319 +240,254 @@ def get_periodo_actual() -> str:
     return now.strftime("%Y-%m")
 
 def get_upload_dir_for_periodo(periodo: str) -> Path:
-    """
-    Retorna el directorio de uploads para un período específico
-    Crea el directorio si no existe
-    """
+    """Retorna el directorio de uploads para un período específico"""
     periodo_dir = UPLOAD_DIR / periodo
     periodo_dir.mkdir(exist_ok=True)
     return periodo_dir
 
-def validar_mes_archivo(filepath: Path) -> dict:
+def validar_archivo_rem(filepath: Path, periodo_esperado: str) -> dict:
     """
-    Valida que el archivo Excel corresponda al mes anterior
-    
-    Args:
-        filepath: Ruta al archivo .xlsm
-        
-    Returns:
-        dict con resultado de validación
+    Valida archivo .xlsm:
+    - 30 hojas
+    - Versión 1.2
+    - Mes del archivo corresponde al periodo esperado
     """
-    # Mapeo de meses español
     MESES_MAP = {
-        1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL",
-        5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
-        9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE"
+        "01": "ENERO", "02": "FEBRERO", "03": "MARZO", "04": "ABRIL",
+        "05": "MAYO", "06": "JUNIO", "07": "JULIO", "08": "AGOSTO",
+        "09": "SEPTIEMBRE", "10": "OCTUBRE", "11": "NOVIEMBRE", "12": "DICIEMBRE"
     }
     
     try:
-        # Obtener fecha actual
-        ahora = datetime.now()
-        mes_actual = ahora.month
-        anio_actual = ahora.year
+        wb = load_workbook(filepath, data_only=True, keep_vba=True)
         
-        # Calcular mes y año anterior
-        if mes_actual == 1:
-            mes_esperado = 12
-            anio_esperado = anio_actual - 1
-        else:
-            mes_esperado = mes_actual - 1
-            anio_esperado = anio_actual
-        
-        mes_esperado_nombre = MESES_MAP[mes_esperado]
-        
-        # Leer archivo Excel
-        wb = load_workbook(filepath, data_only=True)
-        
-        if 'NOMBRE' not in wb.sheetnames:
+        # Validar 30 hojas
+        if len(wb.sheetnames) != 30:
+            wb.close()
             return {
                 "valido": False,
-                "mensaje": "El archivo no contiene la hoja NOMBRE requerida",
-                "mes_archivo": None,
-                "anio_archivo": None,
-                "mes_esperado": mes_esperado_nombre,
-                "anio_esperado": anio_esperado
+                "error": "Validación de estructura fallida",
+                "mensaje": f"El archivo tiene {len(wb.sheetnames)} hojas, se esperaban 30"
             }
         
-        ws = wb['NOMBRE']
+        # Validar hoja NOMBRE y versión
+        if 'NOMBRE' not in wb.sheetnames:
+            wb.close()
+            return {
+                "valido": False,
+                "error": "Validación de estructura fallida",
+                "mensaje": "No se encontró la hoja NOMBRE"
+            }
         
-        # Leer mes y año del archivo
-        mes_archivo_valor = ws['B6'].value
-        anio_archivo_valor = ws['B7'].value
+        ws_nombre = wb['NOMBRE']
+        
+        # Validar versión (buscar "Versión 1.2" o "VERSION 1.2" en la hoja)
+        version_encontrada = False
+        for row in ws_nombre.iter_rows(max_row=15):
+            for cell in row:
+                if cell.value and isinstance(cell.value, str):
+                    valor_upper = cell.value.upper()
+                    if 'VERSIÓN 1.2' in valor_upper or 'VERSION 1.2' in valor_upper:
+                        version_encontrada = True
+                        break
+            if version_encontrada:
+                break
+        
+        if not version_encontrada:
+            wb.close()
+            return {
+                "valido": False,
+                "error": "Validación de versión fallida",
+                "mensaje": "El archivo no corresponde a la versión 1.2"
+            }
+        
+        # Validar mes del archivo - Extraer de celda A9 "Versión 1.2: Febrero 2026"
+        celda_a9 = ws_nombre['A9'].value
+        
+        if celda_a9 and isinstance(celda_a9, str):
+            # Extraer mes y año de texto como "Versión 1.2: Febrero 2026"
+            match = re.search(r'(\w+)\s+(\d{4})', celda_a9)
+            if match:
+                mes_archivo_valor = match.group(1).upper()
+                anio_archivo_valor = match.group(2)
+            else:
+                mes_archivo_valor = None
+                anio_archivo_valor = None
+        else:
+            mes_archivo_valor = None
+            anio_archivo_valor = None
         
         wb.close()
         
-        # Validar que los campos tengan valores
-        if not mes_archivo_valor:
+        if not mes_archivo_valor or not anio_archivo_valor:
             return {
                 "valido": False,
-                "mensaje": f"El campo B6 (Mes) está vacío. Debe contener: {mes_esperado_nombre}",
-                "mes_archivo": None,
-                "anio_archivo": anio_archivo_valor,
-                "mes_esperado": mes_esperado_nombre,
-                "anio_esperado": anio_esperado
+                "error": "Validación de mes fallida",
+                "mensaje": "No se encontró información de mes/año en el archivo (celda A9)"
             }
         
-        if not anio_archivo_valor:
-            return {
-                "valido": False,
-                "mensaje": f"El campo B7 (Año) está vacío. Debe contener: {anio_esperado}",
-                "mes_archivo": mes_archivo_valor,
-                "anio_archivo": None,
-                "mes_esperado": mes_esperado_nombre,
-                "anio_esperado": anio_esperado
-            }
+        # Parsear periodo esperado
+        anio_esperado, mes_esperado_num = periodo_esperado.split('-')
+        mes_esperado_nombre = MESES_MAP[mes_esperado_num]
         
-        # Normalizar mes del archivo
-        mes_archivo_str = str(mes_archivo_valor).strip().upper()
+        # El mes ya está en mayúsculas y normalizado
+        mes_archivo_str = mes_archivo_valor
         
-        # Convertir año a entero
         try:
             anio_archivo_int = int(anio_archivo_valor)
-        except (ValueError, TypeError):
+        except:
             return {
                 "valido": False,
-                "mensaje": f"El año '{anio_archivo_valor}' en B7 no es válido",
-                "mes_archivo": mes_archivo_str,
-                "anio_archivo": None,
-                "mes_esperado": mes_esperado_nombre,
-                "anio_esperado": anio_esperado
+                "error": "Validación de mes fallida",
+                "mensaje": f"El año en el archivo ('{anio_archivo_valor}') no es válido"
             }
         
-        # Validar mes
-        if mes_archivo_str != mes_esperado_nombre:
+        # Validar coincidencia
+        if mes_archivo_str != mes_esperado_nombre or anio_archivo_int != int(anio_esperado):
             return {
                 "valido": False,
-                "mensaje": f"El mes del archivo es '{mes_archivo_str}' pero se esperaba '{mes_esperado_nombre}' (mes anterior al actual)",
+                "error": "Validación de mes fallida",
+                "mensaje": f"El archivo corresponde a {mes_archivo_str} {anio_archivo_int} pero se esperaba {mes_esperado_nombre} {anio_esperado}",
                 "mes_archivo": mes_archivo_str,
                 "anio_archivo": anio_archivo_int,
                 "mes_esperado": mes_esperado_nombre,
-                "anio_esperado": anio_esperado
+                "anio_esperado": int(anio_esperado),
+                "ayuda": f"Recuerde: debe subir el reporte del período {periodo_esperado}"
             }
         
-        # Validar año
-        if anio_archivo_int != anio_esperado:
-            return {
-                "valido": False,
-                "mensaje": f"El año del archivo es {anio_archivo_int} pero se esperaba {anio_esperado}",
-                "mes_archivo": mes_archivo_str,
-                "anio_archivo": anio_archivo_int,
-                "mes_esperado": mes_esperado_nombre,
-                "anio_esperado": anio_esperado
-            }
-        
-        # Todo OK
         return {
             "valido": True,
-            "mensaje": f"Archivo válido: {mes_archivo_str} {anio_archivo_int}",
-            "mes_archivo": mes_archivo_str,
-            "anio_archivo": anio_archivo_int,
-            "mes_esperado": mes_esperado_nombre,
-            "anio_esperado": anio_esperado
+            "mensaje": f"Archivo válido: {mes_archivo_str} {anio_archivo_int}"
         }
         
     except Exception as e:
         return {
             "valido": False,
-            "mensaje": f"Error al validar archivo: {str(e)}",
-            "mes_archivo": None,
-            "anio_archivo": None,
-            "mes_esperado": None,
-            "anio_esperado": None
+            "error": "Error al validar archivo",
+            "mensaje": str(e)
         }
 
-# ==================== SEGURIDAD JWT ====================
-
-def create_access_token(data: dict):
-    """Crear token JWT"""
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Obtener usuario actual desde token JWT"""
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("user_id")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Token inválido")
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT u.id, u.nombre, u.email, u.rol, u.programa_id, p.nombre as programa_nombre
-            FROM usuarios u
-            LEFT JOIN programas p ON u.programa_id = p.id
-            WHERE u.id = ? AND u.activo = 1
-        """, user_id)
-        user = cursor.fetchone()
-        conn.close()
-        
-        if not user:
-            raise HTTPException(status_code=401, detail="Usuario no encontrado")
-        
-        return {
-            "id": user[0],
-            "nombre": user[1],
-            "email": user[2],
-            "rol": user[3],
-            "programa_id": user[4],
-            "programa_nombre": user[5]
-        }
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expirado")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token inválido")
 
 # ==================== ENDPOINTS ====================
 
-# ==================== HEALTH CHECK ====================
+@app.get("/")
+def root():
+    """Health check"""
+    return {
+        "status": "ok",
+        "service": "API Consolidador REM",
+        "version": "2.5.0",
+        "docs": "/docs"
+    }
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint"""
+    """Verificar estado de la API"""
     try:
         conn = get_db_connection()
         conn.close()
-        return {
-            "status": "healthy",
-            "version": "2.5.0",
-            "database": "connected",
-            "periodo_actual": get_periodo_actual()
-        }
+        return {"status": "healthy", "database": "connected", "version": "2.5.0"}
     except:
-        return {
-            "status": "unhealthy",
-            "version": "2.5.0",
-            "database": "disconnected"
-        }
+        return {"status": "unhealthy", "database": "disconnected", "version": "2.5.0"}
+
+# ==================== PLANTILLA ====================
+
+@app.get("/plantilla/download")
+def descargar_plantilla():
+    """Descargar plantilla base SA_26_V1.2.xlsm (sin autenticación)"""
+    plantilla_path = Path("SA_26_V1.2.xlsm")
+    
+    if not plantilla_path.exists():
+        raise HTTPException(status_code=404, detail="Plantilla no encontrada. Coloque SA_26_V1.2.xlsm en la raíz del proyecto")
+    
+    return FileResponse(
+        path=str(plantilla_path),
+        filename="SA_26_V1.2.xlsm",
+        media_type="application/vnd.ms-excel.sheet.macroEnabled.12"
+    )
 
 # ==================== AUTENTICACIÓN ====================
 
-@app.post("/auth/login", response_model=Token)
-def login(user: UserLogin):
-    """Login de usuario"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT u.id, u.nombre, u.email, u.password, u.rol, u.programa_id, u.activo, p.nombre as programa_nombre
-        FROM usuarios u
-        LEFT JOIN programas p ON u.programa_id = p.id
-        WHERE u.email = ?
-    """, user.email)
-    
-    db_user = cursor.fetchone()
-    conn.close()
-    
-    if not db_user:
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-    
-    if not db_user[6]:
-        raise HTTPException(status_code=401, detail="Usuario inactivo")
-    
-    if not bcrypt.checkpw(user.password.encode('utf-8'), db_user[3].encode('utf-8')):
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-    
-    access_token = create_access_token({"user_id": db_user[0]})
-    
-    registrar_log(db_user[0], "login", f"Inicio de sesión exitoso")
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": db_user[0],
-            "nombre": db_user[1],
-            "email": db_user[2],
-            "rol": db_user[4],
-            "programa_id": db_user[5],
-            "programa_nombre": db_user[7]
-        }
-    }
-
 @app.post("/auth/register")
-def register(user: UserRegister, current_user: dict = Depends(get_current_user)):
-    """Registrar nuevo usuario (solo admin)"""
-    if current_user["rol"] != "admin":
-        raise HTTPException(status_code=403, detail="No autorizado")
-    
+def registrar_usuario(usuario: UsuarioCreate):
+    """Registrar nuevo usuario"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT id FROM usuarios WHERE email = ?", user.email)
+    # Verificar si email ya existe
+    cursor.execute("SELECT id FROM usuarios WHERE email = ?", usuario.email)
     if cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=400, detail="Email ya registrado")
     
-    hashed_password = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    # Hashear password
+    password_hash = hash_password(usuario.password)
     
+    # Insertar usuario
     cursor.execute("""
-        INSERT INTO usuarios (nombre, email, password, rol, programa_id)
+        INSERT INTO usuarios (nombre, email, password_hash, rol, programa_id)
         VALUES (?, ?, ?, ?, ?)
-    """, user.nombre, user.email, hashed_password, user.rol, user.programa_id)
+    """, usuario.nombre, usuario.email, password_hash, usuario.rol, usuario.programa_id)
     
     conn.commit()
-    nuevo_id = cursor.execute("SELECT @@IDENTITY").fetchone()[0]
+    user_id = cursor.execute("SELECT @@IDENTITY").fetchone()[0]
     conn.close()
     
-    registrar_log(current_user["id"], "register", f"Usuario creado: {user.email}")
-    
-    return {"message": "Usuario creado exitosamente", "user_id": nuevo_id}
+    return {"message": "Usuario creado exitosamente", "user_id": user_id}
 
-@app.get("/auth/me", response_model=UserInfo)
-def get_me(current_user: dict = Depends(get_current_user)):
-    """Obtener información del usuario actual"""
+@app.post("/auth/login")
+def login(credentials: UsuarioLogin):
+    """Login y generar token"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT u.id, u.nombre, u.email, u.rol, u.programa_id, u.activo, u.created_at, p.nombre as programa_nombre
+        SELECT u.id, u.nombre, u.email, u.password_hash, u.rol, u.programa_id, u.activo,
+               p.nombre as programa_nombre
         FROM usuarios u
         LEFT JOIN programas p ON u.programa_id = p.id
-        WHERE u.id = ?
-    """, current_user["id"])
+        WHERE u.email = ?
+    """, credentials.email)
     
-    user = cursor.fetchone()
+    row = cursor.fetchone()
     conn.close()
     
+    if not row:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    
+    if not verify_password(credentials.password, row[3]):
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    
+    if not row[6]:
+        raise HTTPException(status_code=401, detail="Usuario inactivo")
+    
+    token = create_access_token({
+        "user_id": row[0],
+        "email": row[2],
+        "rol": row[4]
+    })
+    
     return {
-        "id": user[0],
-        "nombre": user[1],
-        "email": user[2],
-        "rol": user[3],
-        "programa_id": user[4],
-        "activo": user[5],
-        "created_at": user[6],
-        "programa_nombre": user[7]
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": row[0],
+            "nombre": row[1],
+            "email": row[2],
+            "rol": row[4],
+            "programa_id": row[5],
+            "programa_nombre": row[7]
+        }
     }
 
-@app.get("/usuarios", response_model=List[UserInfo])
+@app.get("/auth/me")
+def get_me(current_user: dict = Depends(get_current_user)):
+    """Obtener info del usuario actual"""
+    return current_user
+
+@app.get("/usuarios", response_model=List[Usuario])
 def listar_usuarios(current_user: dict = Depends(get_current_user)):
-    """Listar usuarios (solo admin)"""
+    """Listar usuarios encargados con nombre de programa (solo admin)"""
     if current_user["rol"] != "admin":
         raise HTTPException(status_code=403, detail="No autorizado")
     
@@ -533,10 +495,12 @@ def listar_usuarios(current_user: dict = Depends(get_current_user)):
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT u.id, u.nombre, u.email, u.rol, u.programa_id, u.activo, u.created_at, p.nombre as programa_nombre
+        SELECT u.id, u.nombre, u.email, u.rol, u.programa_id, u.activo, u.created_at,
+               p.nombre as programa_nombre
         FROM usuarios u
         LEFT JOIN programas p ON u.programa_id = p.id
-        ORDER BY u.created_at DESC
+        WHERE u.rol = 'encargado'
+        ORDER BY u.nombre
     """)
     
     usuarios = []
@@ -557,13 +521,13 @@ def listar_usuarios(current_user: dict = Depends(get_current_user)):
 
 # ==================== PROGRAMAS ====================
 
-@app.get("/programas", response_model=List[ProgramaInfo])
-def listar_programas():
-    """Listar programas disponibles"""
+@app.get("/programas")
+def listar_programas(current_user: dict = Depends(get_current_user)):
+    """Listar programas activos"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT id, nombre, codigo FROM programas ORDER BY nombre")
+    cursor.execute("SELECT id, nombre, codigo FROM programas WHERE activo = 1 ORDER BY nombre")
     
     programas = []
     for row in cursor.fetchall():
@@ -576,257 +540,9 @@ def listar_programas():
     conn.close()
     return programas
 
-# ==================== PERÍODOS ====================
-
-@app.get("/periodo-actual")
-def obtener_periodo_actual():
-    """Obtener información del período actual"""
-    periodo = get_periodo_actual()
-    año, mes = periodo.split('-')
-    
-    meses_nombres = {
-        "01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril",
-        "05": "Mayo", "06": "Junio", "07": "Julio", "08": "Agosto",
-        "09": "Septiembre", "10": "Octubre", "11": "Noviembre", "12": "Diciembre"
-    }
-    
-    return {
-        "periodo": periodo,
-        "mes": meses_nombres.get(mes, mes),
-        "anio": int(año),
-        "mes_numero": int(mes)
-    }
-
-@app.get("/periodos")
-def obtener_periodos(current_user: dict = Depends(get_current_user)):
-    """Obtener estadísticas de todos los períodos"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Obtener periodos únicos
-    cursor.execute("""
-        SELECT DISTINCT periodo 
-        FROM archivos 
-        WHERE periodo IS NOT NULL
-        ORDER BY periodo DESC
-    """)
-    
-    periodos_list = []
-    for row in cursor.fetchall():
-        periodo = row[0]
-        
-        # Estadísticas del período
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) as pendientes,
-                SUM(CASE WHEN estado = 'validado' THEN 1 ELSE 0 END) as validados,
-                SUM(CASE WHEN estado = 'rechazado' THEN 1 ELSE 0 END) as rechazados,
-                SUM(CASE WHEN estado = 'consolidado' THEN 1 ELSE 0 END) as consolidados
-            FROM archivos
-            WHERE periodo = ? AND activo = 1
-        """, periodo)
-        
-        stats = cursor.fetchone()
-        
-        # Verificar si existe consolidación
-        cursor.execute("""
-            SELECT COUNT(*) FROM consolidaciones WHERE periodo = ?
-        """, periodo)
-        
-        hay_consolidacion = cursor.fetchone()[0] > 0
-        
-        periodos_list.append({
-            "periodo": periodo,
-            "total_archivos": stats[0] or 0,
-            "pendientes": stats[1] or 0,
-            "validados": stats[2] or 0,
-            "rechazados": stats[3] or 0,
-            "consolidados": stats[4] or 0,
-            "hay_consolidacion": hay_consolidacion,
-            "puede_consolidar": (stats[2] or 0) > 0 and not hay_consolidacion
-        })
-    
-    conn.close()
-    return periodos_list
-
-# ==================== PLANTILLA ====================
-
-@app.get("/plantilla/download")
-def descargar_plantilla():
-    """Descargar plantilla base SA_26_V1.2.xlsm (público, sin autenticación)"""
-    plantilla_path = Path("SA_26_V1.2.xlsm")
-    
-    if not plantilla_path.exists():
-        raise HTTPException(
-            status_code=404, 
-            detail="Plantilla no encontrada. Coloque SA_26_V1.2.xlsm en la raíz del proyecto"
-        )
-    
-    return FileResponse(
-        path=str(plantilla_path),
-        filename="SA_26_V1.2.xlsm",
-        media_type="application/vnd.ms-excel.sheet.macroEnabled.12"
-    )
-
-
 # ==================== ARCHIVOS ====================
 
-@app.post("/archivos/upload")
-async def subir_archivo(
-    file: UploadFile = File(...),
-    programa_id: int = None,
-    periodo: Optional[str] = None,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Subir archivo REM con validación de mes anterior
-    
-    Args:
-        file: Archivo .xlsm
-        programa_id: ID del programa (encargados no lo necesitan)
-        periodo: Periodo YYYY-MM (opcional, por defecto mes actual)
-    """
-    
-    if not file.filename.endswith('.xlsm'):
-        raise HTTPException(status_code=400, detail="Solo se permiten archivos .xlsm")
-    
-    if current_user["rol"] == "encargado":
-        programa_id = current_user["programa_id"]
-        if not programa_id:
-            raise HTTPException(status_code=400, detail="Usuario sin programa asignado")
-    
-    if not programa_id:
-        raise HTTPException(status_code=400, detail="programa_id requerido")
-    
-    # Obtener periodo (usar el enviado o el actual)
-    periodo_archivo = periodo if periodo else get_periodo_actual()
-    
-    # Validar formato de periodo si fue enviado
-    if periodo:
-        if not re.match(r'^\d{4}-\d{2}$', periodo):
-            raise HTTPException(
-                status_code=400, 
-                detail="Formato de periodo inválido. Use YYYY-MM (ej: 2026-03)"
-            )
-    
-    # ============================================================
-    # VALIDACIÓN DE MES ANTERIOR (solo si NO se envió periodo)
-    # ============================================================
-    
-    # Guardar archivo temporalmente para validación
-    temp_dir = Path("temp_uploads")
-    temp_dir.mkdir(exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    temp_filename = f"temp_{timestamp}_{file.filename}"
-    temp_filepath = temp_dir / temp_filename
-    
-    # Guardar temporalmente
-    with open(temp_filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    # Si el frontend envió periodo explícito, NO validar mes
-    # Esto permite subir archivos atrasados o de periodos específicos
-    validar_mes = not periodo  # Validar solo si NO se envió periodo
-    
-    if validar_mes:
-        # Validar que corresponda al mes anterior
-        validacion = validar_mes_archivo(temp_filepath)
-        
-        if not validacion["valido"]:
-            # Eliminar archivo temporal
-            temp_filepath.unlink()
-            
-            # Retornar error descriptivo
-            raise HTTPException(
-                status_code=400, 
-                detail={
-                    "error": "Validación de mes fallida",
-                    "mensaje": validacion["mensaje"],
-                    "mes_archivo": validacion["mes_archivo"],
-                    "anio_archivo": validacion["anio_archivo"],
-                    "mes_esperado": validacion["mes_esperado"],
-                    "anio_esperado": validacion["anio_esperado"],
-                    "ayuda": f"El archivo debe corresponder al mes anterior. Si estamos en {datetime.now().strftime('%B %Y')}, el archivo debe ser de {validacion['mes_esperado']} {validacion['anio_esperado']}"
-                }
-            )
-    else:
-        # No validar mes si se envió periodo explícito
-        # Solo leer la información del archivo para logging
-        try:
-            wb = load_workbook(temp_filepath, data_only=True)
-            ws = wb['NOMBRE']
-            mes_archivo = str(ws['B6'].value).strip().upper() if ws['B6'].value else "N/A"
-            anio_archivo = int(ws['B7'].value) if ws['B7'].value else 0
-            wb.close()
-            
-            validacion = {
-                "valido": True,
-                "mensaje": f"Periodo explícito: {periodo_archivo}. Archivo: {mes_archivo} {anio_archivo}",
-                "mes_archivo": mes_archivo,
-                "anio_archivo": anio_archivo
-            }
-        except:
-            validacion = {
-                "valido": True,
-                "mensaje": f"Periodo explícito: {periodo_archivo}",
-                "mes_archivo": "N/A",
-                "anio_archivo": 0
-            }
-    
-    # ============================================================
-    # ARCHIVO VÁLIDO - CONTINUAR CON PROCESO NORMAL
-    # ============================================================
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Desactivar archivo del mismo programa+periodo
-    cursor.execute("""
-        UPDATE archivos 
-        SET activo = 0 
-        WHERE programa_id = ? AND usuario_id = ? AND periodo = ? AND activo = 1
-    """, programa_id, current_user["id"], periodo_archivo)
-    
-    # Mover de temporal a carpeta definitiva
-    filename = f"{programa_id}_{timestamp}_{file.filename}"
-    upload_dir_periodo = get_upload_dir_for_periodo(periodo_archivo)
-    filepath = upload_dir_periodo / filename
-    
-    # Mover archivo
-    shutil.move(str(temp_filepath), str(filepath))
-    
-    # Incluir periodo en INSERT
-    cursor.execute("""
-        INSERT INTO archivos (usuario_id, programa_id, nombre_archivo, ruta_archivo, estado, periodo)
-        VALUES (?, ?, ?, ?, 'pendiente', ?)
-    """, current_user["id"], programa_id, file.filename, str(filepath), periodo_archivo)
-    
-    conn.commit()
-    archivo_id = cursor.execute("SELECT @@IDENTITY").fetchone()[0]
-    conn.close()
-    
-    registrar_log(
-        current_user["id"], 
-        "subir", 
-        f"Archivo: {file.filename} (Periodo: {periodo_archivo}, Mes validado: {validacion['mes_archivo']} {validacion['anio_archivo']})", 
-        archivo_id
-    )
-    
-    return {
-        "message": "Archivo subido exitosamente",
-        "archivo_id": archivo_id,
-        "filename": filename,
-        "periodo": periodo_archivo,
-        "validacion": {
-            "mes_archivo": validacion["mes_archivo"],
-            "anio_archivo": validacion["anio_archivo"],
-            "mensaje": validacion["mensaje"]
-        }
-    }
-
-@app.get("/archivos", response_model=List[ArchivoInfo])
+@app.get("/archivos")
 def listar_archivos(
     estado: Optional[str] = None,
     programa_id: Optional[int] = None,
@@ -837,16 +553,12 @@ def listar_archivos(
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Si no se especifica periodo, usar el actual
-    if periodo is None:
-        periodo = get_periodo_actual()
-    
     query = """
         SELECT 
             a.id, a.usuario_id, a.programa_id, a.nombre_archivo, a.estado,
             a.observaciones, a.fecha_subida, a.fecha_validacion, a.validado_por,
-            a.activo, u.nombre as usuario_nombre, p.nombre as programa_nombre,
-            v.nombre as validado_por_nombre, a.periodo
+            a.activo, a.periodo, u.nombre as usuario_nombre, p.nombre as programa_nombre,
+            v.nombre as validado_por_nombre
         FROM archivos a
         JOIN usuarios u ON a.usuario_id = u.id
         JOIN programas p ON a.programa_id = p.id
@@ -854,10 +566,6 @@ def listar_archivos(
         WHERE a.activo = 1
     """
     params = []
-    
-    # Filtro por periodo
-    query += " AND a.periodo = ?"
-    params.append(periodo)
     
     if estado:
         query += " AND a.estado = ?"
@@ -867,13 +575,20 @@ def listar_archivos(
         query += " AND a.programa_id = ?"
         params.append(programa_id)
     
+    if periodo:
+        query += " AND a.periodo = ?"
+        params.append(periodo)
+    
     if current_user["rol"] == "encargado":
         query += " AND a.usuario_id = ?"
         params.append(current_user["id"])
     
     query += " ORDER BY a.fecha_subida DESC"
     
-    cursor.execute(query, *params)
+    if params:
+        cursor.execute(query, *params)
+    else:
+        cursor.execute(query)
     
     archivos = []
     for row in cursor.fetchall():
@@ -888,14 +603,148 @@ def listar_archivos(
             "fecha_validacion": row[7],
             "validado_por": row[8],
             "activo": row[9],
-            "usuario_nombre": row[10],
-            "programa_nombre": row[11],
-            "validado_por_nombre": row[12],
-            "periodo": row[13]
+            "periodo": row[10],
+            "usuario_nombre": row[11],
+            "programa_nombre": row[12],
+            "validado_por_nombre": row[13]
         })
     
     conn.close()
     return archivos
+
+@app.post("/archivos/upload")
+async def subir_archivo(
+    file: UploadFile = File(...),
+    programa_id: Optional[int] = Form(None),
+    periodo: str = Form(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Subir archivo REM con validación completa"""
+    
+    # Validar extensión
+    if not file.filename.endswith('.xlsm'):
+        raise HTTPException(status_code=400, detail="Solo se permiten archivos .xlsm")
+    
+    # Determinar programa_id
+    if current_user["rol"] == "encargado":
+        programa_id = current_user["programa_id"]
+        if not programa_id:
+            raise HTTPException(status_code=400, detail="Usuario sin programa asignado")
+    
+    if not programa_id:
+        raise HTTPException(status_code=400, detail="programa_id requerido")
+    
+    # Validar formato de periodo
+    if not re.match(r'^\d{4}-\d{2}$', periodo):
+        raise HTTPException(status_code=400, detail="Formato de periodo inválido. Use YYYY-MM")
+    
+    # Verificar si ya existe archivo activo no-rechazado
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id FROM archivos 
+        WHERE programa_id = ? AND periodo = ? AND activo = 1 AND estado != 'rechazado'
+    """, programa_id, periodo)
+    
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(
+            status_code=400, 
+            detail="Ya existe un archivo activo para este programa y período. Espere a que sea procesado o rechazado."
+        )
+    
+    # Guardar temporalmente
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    temp_filename = f"temp_{timestamp}_{file.filename}"
+    temp_filepath = TEMP_UPLOAD_DIR / temp_filename
+    
+    with open(temp_filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Validar archivo
+    validacion = validar_archivo_rem(temp_filepath, periodo)
+    
+    if not validacion["valido"]:
+        temp_filepath.unlink()
+        conn.close()
+        raise HTTPException(status_code=400, detail=validacion)
+    
+    # Desactivar archivos anteriores
+    cursor.execute("""
+        UPDATE archivos 
+        SET activo = 0 
+        WHERE programa_id = ? AND periodo = ? AND activo = 1
+    """, programa_id, periodo)
+    
+    # Mover a carpeta definitiva
+    filename = f"{programa_id}_{timestamp}_{file.filename}"
+    upload_dir_periodo = get_upload_dir_for_periodo(periodo)
+    filepath = upload_dir_periodo / filename
+    
+    shutil.move(str(temp_filepath), str(filepath))
+    
+    # Insertar registro
+    cursor.execute("""
+        INSERT INTO archivos (usuario_id, programa_id, nombre_archivo, ruta_archivo, estado, periodo)
+        VALUES (?, ?, ?, ?, 'pendiente', ?)
+    """, current_user["id"], programa_id, file.filename, str(filepath), periodo)
+    
+    conn.commit()
+    archivo_id = cursor.execute("SELECT @@IDENTITY").fetchone()[0]
+    conn.close()
+    
+    registrar_log(
+        current_user["id"], 
+        "subida",
+        f"Archivo: {file.filename} (Periodo: {periodo})", 
+        archivo_id
+    )
+    
+    return {
+        "message": "Archivo subido exitosamente",
+        "archivo_id": archivo_id,
+        "filename": filename,
+        "periodo": periodo
+    }
+
+@app.post("/archivos/validar")
+def validar_archivo(
+    request: ArchivoValidar,
+    current_user: dict = Depends(get_current_user)
+):
+    """Validar o rechazar archivo (solo admin)"""
+    if current_user["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="No autorizado")
+    
+    if request.estado not in ["validado", "rechazado"]:
+        raise HTTPException(status_code=400, detail="Estado debe ser 'validado' o 'rechazado'")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        UPDATE archivos
+        SET estado = ?,
+            observaciones = ?,
+            fecha_validacion = GETDATE(),
+            validado_por = ?
+        WHERE id = ?
+    """, request.estado, request.observaciones, current_user["id"], request.archivo_id)
+    
+    conn.commit()
+    conn.close()
+    
+    accion = "validacion" if request.estado == "validado" else "rechazo"
+    
+    registrar_log(
+        current_user["id"],
+        accion,
+        request.observaciones or f"Archivo {request.estado}",
+        request.archivo_id
+    )
+    
+    return {"message": f"Archivo {request.estado} exitosamente"}
 
 @app.get("/archivos/{archivo_id}/download")
 def descargar_archivo(
@@ -926,63 +775,11 @@ def descargar_archivo(
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Archivo físico no encontrado")
     
-    registrar_log(
-        current_user["id"],
-        "descargar",
-        f"Archivo ID {archivo_id}: {archivo[2]}",
-        archivo_id
-    )
-    
     return FileResponse(
         path=str(filepath),
         filename=archivo[2],
         media_type="application/vnd.ms-excel.sheet.macroEnabled.12"
     )
-
-@app.get("/archivos/{archivo_id}/historial")
-def obtener_historial_archivo(
-    archivo_id: int,
-    current_user: dict = Depends(get_current_user)
-):
-    """Obtener historial de acciones sobre un archivo específico"""
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Verificar que el archivo existe
-    cursor.execute("SELECT id, usuario_id FROM archivos WHERE id = ?", archivo_id)
-    archivo = cursor.fetchone()
-    
-    if not archivo:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
-    
-    # Si es encargado, solo puede ver historial de sus propios archivos
-    if current_user["rol"] == "encargado" and archivo[1] != current_user["id"]:
-        conn.close()
-        raise HTTPException(status_code=403, detail="No tiene permiso para ver este historial")
-    
-    # Obtener historial del archivo
-    cursor.execute("""
-        SELECT l.id, l.accion, l.detalle, l.fecha, u.nombre as usuario_nombre
-        FROM log_actividad l
-        JOIN usuarios u ON l.usuario_id = u.id
-        WHERE l.archivo_id = ?
-        ORDER BY l.fecha ASC
-    """, archivo_id)
-    
-    historial = []
-    for row in cursor.fetchall():
-        historial.append({
-            "id": row[0],
-            "accion": row[1],
-            "detalle": row[2],
-            "fecha": row[3],
-            "usuario_nombre": row[4]
-        })
-    
-    conn.close()
-    return historial
 
 @app.post("/archivos/{archivo_id}/resubir")
 async def resubir_archivo(
@@ -990,7 +787,7 @@ async def resubir_archivo(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """Re-subir archivo (admin para reparar archivos rechazados)"""
+    """Re-subir archivo reparado (solo admin)"""
     if current_user["rol"] != "admin":
         raise HTTPException(status_code=403, detail="No autorizado")
     
@@ -1000,28 +797,27 @@ async def resubir_archivo(
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Obtener info del archivo original
     cursor.execute("""
         SELECT usuario_id, programa_id, ruta_archivo, periodo 
         FROM archivos 
         WHERE id = ?
     """, archivo_id)
     
-    archivo_original = cursor.fetchone()
+    archivo = cursor.fetchone()
     
-    if not archivo_original:
+    if not archivo:
         conn.close()
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
     
-    # Eliminar archivo físico anterior
-    old_filepath = Path(archivo_original[2])
+    # Eliminar archivo anterior
+    old_filepath = Path(archivo[2])
     if old_filepath.exists():
         old_filepath.unlink()
     
     # Guardar nuevo archivo
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{archivo_original[1]}_{timestamp}_{file.filename}"
-    upload_dir_periodo = get_upload_dir_for_periodo(archivo_original[3])
+    filename = f"{archivo[1]}_{timestamp}_{file.filename}"
+    upload_dir_periodo = get_upload_dir_for_periodo(archivo[3])
     filepath = upload_dir_periodo / filename
     
     with open(filepath, "wb") as buffer:
@@ -1044,8 +840,8 @@ async def resubir_archivo(
     
     registrar_log(
         current_user["id"],
-        "resubir",
-        f"Archivo ID {archivo_id}: Documento reparado por administrador",
+        "resubida",
+        f"Documento reparado: {file.filename}",
         archivo_id
     )
     
@@ -1055,150 +851,162 @@ async def resubir_archivo(
         "filename": filename
     }
 
-@app.post("/archivos/validar")
-def validar_archivo(
-    request: ArchivoValidar,
-    current_user: dict = Depends(get_current_user)
-):
-    """Validar o rechazar archivo (solo admin)"""
-    if current_user["rol"] != "admin":
-        raise HTTPException(status_code=403, detail="No autorizado")
-    
-    if request.estado not in ["validado", "rechazado"]:
-        raise HTTPException(status_code=400, detail="Estado debe ser 'validado' o 'rechazado'")
+@app.get("/archivos/{archivo_id}/historial")
+def historial_archivo(archivo_id: int, current_user: dict = Depends(get_current_user)):
+    """Historial de actividad de un archivo específico"""
     
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Verificar que el archivo existe
+    cursor.execute("SELECT id, usuario_id FROM archivos WHERE id = ?", archivo_id)
+    archivo = cursor.fetchone()
+    
+    if not archivo:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    
+    # Si es encargado, solo puede ver historial de sus archivos
+    if current_user["rol"] == "encargado" and archivo[1] != current_user["id"]:
+        conn.close()
+        raise HTTPException(status_code=403, detail="No tiene permiso para ver este historial")
+    
+    # Obtener historial
     cursor.execute("""
-        UPDATE archivos
-        SET estado = ?,
-            observaciones = ?,
-            fecha_validacion = GETDATE(),
-            validado_por = ?
-        WHERE id = ?
-    """, request.estado, request.observaciones, current_user["id"], request.archivo_id)
+        SELECT l.id, l.accion, l.detalle, l.fecha, u.nombre as usuario_nombre
+        FROM log_actividad l
+        JOIN usuarios u ON l.usuario_id = u.id
+        WHERE l.archivo_id = ?
+        ORDER BY l.fecha ASC
+    """, archivo_id)
     
-    conn.commit()
+    logs = []
+    for row in cursor.fetchall():
+        logs.append({
+            "id": row[0],
+            "accion": row[1],
+            "detalle": row[2],
+            "fecha": row[3],
+            "usuario_nombre": row[4]
+        })
+    
     conn.close()
-    
-    accion = "validar" if request.estado == "validado" else "rechazar"
-    
-    registrar_log(
-        current_user["id"],
-        accion,
-        f"Archivo ID {request.archivo_id}: {request.observaciones or 'Sin observaciones'}",
-        request.archivo_id
-    )
-    
-    return {"message": f"Archivo {request.estado} exitosamente"}
+    return logs
 
-@app.post("/archivos/validar-mes")
-async def validar_mes_antes_de_subir(
-    file: UploadFile = File(...),
+# ==================== CONSOLIDACIONES ====================
+
+@app.get("/consolidaciones", response_model=List[ConsolidacionInfo])
+def listar_consolidaciones(
+    periodo: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
+    """Listar consolidaciones"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    query = """
+        SELECT 
+            c.id, c.nombre_archivo, c.archivos_count,
+            c.creado_por, c.fecha, c.periodo, u.nombre as creado_por_nombre
+        FROM consolidaciones c
+        JOIN usuarios u ON c.creado_por = u.id
     """
-    Valida que el archivo corresponda al mes anterior SIN subirlo
-    Útil para el frontend para validar antes de enviar
-    """
+    params = []
     
-    if not file.filename.endswith('.xlsm'):
-        raise HTTPException(status_code=400, detail="Solo se permiten archivos .xlsm")
+    if periodo:
+        query += " WHERE c.periodo = ?"
+        params.append(periodo)
     
-    # Guardar temporalmente
-    temp_dir = Path("temp_uploads")
-    temp_dir.mkdir(exist_ok=True)
+    query += " ORDER BY c.fecha DESC"
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    temp_filename = f"temp_val_{timestamp}_{file.filename}"
-    temp_filepath = temp_dir / temp_filename
+    if params:
+        cursor.execute(query, *params)
+    else:
+        cursor.execute(query)
     
-    with open(temp_filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    consolidaciones = []
+    for row in cursor.fetchall():
+        consolidaciones.append({
+            "id": row[0],
+            "nombre_archivo": row[1],
+            "archivos_count": row[2],
+            "creado_por": row[3],
+            "fecha": row[4],
+            "periodo": row[5],
+            "creado_por_nombre": row[6]
+        })
     
-    # Validar
-    validacion = validar_mes_archivo(temp_filepath)
-    
-    # Eliminar archivo temporal
-    temp_filepath.unlink()
-    
-    # Retornar resultado
-    return {
-        "valido": validacion["valido"],
-        "mensaje": validacion["mensaje"],
-        "mes_archivo": validacion["mes_archivo"],
-        "anio_archivo": validacion["anio_archivo"],
-        "mes_esperado": validacion["mes_esperado"],
-        "anio_esperado": validacion["anio_esperado"],
-        "fecha_actual": datetime.now().strftime("%B %Y")
-    }
-
-
-# ==================== CONSOLIDACIÓN ====================
+    conn.close()
+    return consolidaciones
 
 @app.post("/consolidar")
 def consolidar_archivos(
-    request: ConsolidacionCreate,
+    request: ConsolidarRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Consolidar archivos validados en un solo archivo"""
+    """Consolidar archivos validados"""
+    # Validar permisos
     if current_user["rol"] != "admin":
         raise HTTPException(status_code=403, detail="No autorizado")
     
+    # Validar cantidad mínima
     if len(request.archivos_ids) < 2:
         raise HTTPException(status_code=400, detail="Se requieren al menos 2 archivos")
     
-    # Validar formato de período
-    if not re.match(r'^\d{4}-\d{2}$', request.periodo):
-        raise HTTPException(
-            status_code=400,
-            detail="Formato de periodo inválido. Use YYYY-MM (ej: 2026-03)"
-        )
+    # CONVERTIR TODO A STRING EXPLÍCITAMENTE
+    periodo_str = str(request.periodo) if request.periodo else ""
+    
+    # Validar formato de periodo
+    if not re.match(r'^\d{4}-\d{2}$', periodo_str):
+        raise HTTPException(status_code=400, detail="Formato de periodo inválido")
     
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Verificar que todos los archivos existen, están validados y son del mismo periodo
-    placeholders = ','.join('?' * len(request.archivos_ids))
-    cursor.execute(f"""
-        SELECT id, ruta_archivo, estado, periodo
-        FROM archivos
-        WHERE id IN ({placeholders}) AND activo = 1
-    """, *request.archivos_ids)
-    
-    archivos = cursor.fetchall()
-    
-    if len(archivos) != len(request.archivos_ids):
-        conn.close()
-        raise HTTPException(status_code=400, detail="Algunos archivos no existen")
-    
-    # Verificar que todos son del periodo solicitado
-    for archivo in archivos:
-        if archivo[3] != request.periodo:
-            conn.close()
-            raise HTTPException(
-                status_code=400,
-                detail=f"El archivo {archivo[0]} es del periodo {archivo[3]}, se esperaba {request.periodo}"
-            )
-        if archivo[2] != 'validado':
-            conn.close()
-            raise HTTPException(
-                status_code=400,
-                detail=f"El archivo {archivo[0]} no está validado"
-            )
-    
-    # Consolidar archivos
     try:
-        # Usar primer archivo como plantilla
-        plantilla_path = archivos[0][1]
+        # Verificar archivos
+        placeholders = ','.join(['?' for _ in request.archivos_ids])
+        query = f"""
+            SELECT id, ruta_archivo, estado, periodo
+            FROM archivos
+            WHERE id IN ({placeholders}) AND activo = 1
+        """
+        cursor.execute(query, *request.archivos_ids)
+        
+        archivos = cursor.fetchall()
+        
+        if len(archivos) != len(request.archivos_ids):
+            conn.close()
+            raise HTTPException(status_code=400, detail="Algunos archivos no existen")
+        
+        # Validar estado y periodo
+        for archivo in archivos:
+            archivo_id = int(archivo[0])
+            archivo_ruta = str(archivo[1])
+            archivo_estado = str(archivo[2])
+            archivo_periodo = str(archivo[3]) if archivo[3] else ""
+            
+            if archivo_periodo != periodo_str:
+                conn.close()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"El archivo {archivo_id} es del periodo {archivo_periodo}, se esperaba {periodo_str}"
+                )
+            if archivo_estado != 'validado':
+                conn.close()
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"El archivo {archivo_id} no está validado (estado: {archivo_estado})"
+                )
+        
+        # Proceso de consolidación
+        plantilla_path = str(archivos[0][1])
         wb_consolidado = load_workbook(plantilla_path, keep_vba=True)
         
-        # Identificar hojas de datos
         hojas_datos = [sheet for sheet in wb_consolidado.sheetnames 
                       if sheet not in ['NOMBRE', 'Control', 'MACROS']]
         
-        # Inicializar celdas editables en 0
+        # Inicializar en 0
         for sheet_name in hojas_datos:
             ws = wb_consolidado[sheet_name]
             for row in ws.iter_rows():
@@ -1208,8 +1016,9 @@ def consolidar_archivos(
                     if cell.data_type == 'n' and not cell.protection.locked:
                         cell.value = 0
         
-        # Sumar valores de todos los archivos
-        for archivo_path in [a[1] for a in archivos]:
+        # Sumar valores
+        for archivo in archivos:
+            archivo_path = str(archivo[1])
             wb_temp = load_workbook(archivo_path, data_only=True)
             
             for sheet_name in hojas_datos:
@@ -1238,115 +1047,92 @@ def consolidar_archivos(
         # Actualizar hoja NOMBRE
         if 'NOMBRE' in wb_consolidado.sheetnames:
             ws_nombre = wb_consolidado['NOMBRE']
-            ws_nombre['B4'] = f"ARCHIVO CONSOLIDADO - Periodo {request.periodo}"
+            ws_nombre['B4'] = f"ARCHIVO CONSOLIDADO - Periodo {periodo_str}"
             ws_nombre['B5'] = f"Fecha consolidación: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
         
-        # Guardar archivo consolidado
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"REM_Consolidado_{request.periodo}_{timestamp}.xlsm"
-        upload_dir_periodo = get_upload_dir_for_periodo(request.periodo)
+        # Guardar archivo
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"REM_Consolidado_{periodo_str}_{timestamp_str}.xlsm"
+        upload_dir_periodo = get_upload_dir_for_periodo(periodo_str)
         filepath = upload_dir_periodo / filename
+        filepath_str = str(filepath)
         
-        wb_consolidado.save(filepath)
+        wb_consolidado.save(filepath_str)
         wb_consolidado.close()
         
-        # Registrar en BD
+        # Registrar consolidación en BD
+        archivos_count = len(request.archivos_ids)
+        usuario_id = int(current_user["id"])
+        
         cursor.execute("""
-            INSERT INTO consolidaciones (nombre_archivo, ruta_archivo, creado_por, periodo)
-            VALUES (?, ?, ?, ?)
-        """, filename, str(filepath), current_user["id"], request.periodo)
+            INSERT INTO consolidaciones (nombre_archivo, ruta_archivo, archivos_count, creado_por, periodo)
+            VALUES (?, ?, ?, ?, ?)
+        """, filename, filepath_str, archivos_count, usuario_id, periodo_str)
         
-        consolidacion_id = cursor.execute("SELECT @@IDENTITY").fetchone()[0]
+        consolidacion_id = int(cursor.execute("SELECT @@IDENTITY").fetchone()[0])
         
-        # Registrar archivos consolidados
+        # Insertar relaciones y actualizar estados
         for archivo_id in request.archivos_ids:
+            archivo_id_int = int(archivo_id)
+            
             cursor.execute("""
                 INSERT INTO consolidacion_archivos (consolidacion_id, archivo_id)
                 VALUES (?, ?)
-            """, consolidacion_id, archivo_id)
+            """, consolidacion_id, archivo_id_int)
             
-            # Marcar archivo como consolidado
             cursor.execute("""
-                UPDATE archivos
-                SET estado = 'consolidado'
+                UPDATE archivos 
+                SET estado = 'consolidado' 
                 WHERE id = ?
-            """, archivo_id)
+            """, archivo_id_int)
         
         conn.commit()
         conn.close()
         
-        # Registrar log general
+        # Registrar logs
+        detalle_general = f"{archivos_count} archivos (Periodo: {periodo_str})"
         registrar_log(
-            current_user["id"],
-            "consolidar",
-            f"{len(request.archivos_ids)} archivos (Periodo: {request.periodo})",
+            usuario_id,
+            "consolidacion",
+            detalle_general,
             consolidacion_id=consolidacion_id
         )
         
-        # Registrar log para cada archivo consolidado
+        # Log por cada archivo
         for archivo_id in request.archivos_ids:
+            archivo_id_int = int(archivo_id)
+            detalle_archivo = f"Incluido en consolidación {consolidacion_id}"
             registrar_log(
-                current_user["id"],
-                "consolidar",
-                f"Incluido en consolidación {consolidacion_id} del periodo {request.periodo}",
-                archivo_id
+                usuario_id,
+                "consolidacion",
+                detalle_archivo,
+                archivo_id=archivo_id_int
             )
         
         return {
             "message": "Consolidación exitosa",
             "consolidacion_id": consolidacion_id,
             "archivo": filename,
-            "periodo": request.periodo
+            "periodo": periodo_str
         }
         
+    except HTTPException:
+        # Re-lanzar HTTPException sin modificar
+        raise
     except Exception as e:
+        import traceback
+        error_completo = traceback.format_exc()
+        print("="*70)
+        print("❌ ERROR EN CONSOLIDACIÓN:")
+        print(error_completo)
+        print("="*70)
         conn.close()
-        raise HTTPException(status_code=500, detail=f"Error en consolidación: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error en consolidación: {str(e)}"
+        )
 
-@app.get("/consolidaciones", response_model=List[ConsolidacionInfo])
-def listar_consolidaciones(
-    periodo: Optional[str] = None,
-    current_user: dict = Depends(get_current_user)
-):
-    """Listar consolidaciones"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    query = """
-        SELECT 
-            c.id, c.nombre_archivo, c.ruta_archivo, c.fecha,
-            c.creado_por, u.nombre as creado_por_nombre, c.periodo,
-            COUNT(ca.archivo_id) as archivos_count
-        FROM consolidaciones c
-        JOIN usuarios u ON c.creado_por = u.id
-        LEFT JOIN consolidacion_archivos ca ON c.id = ca.consolidacion_id
-    """
-    params = []
-    
-    if periodo:
-        query += " WHERE c.periodo = ?"
-        params.append(periodo)
-    
-    query += " GROUP BY c.id, c.nombre_archivo, c.ruta_archivo, c.fecha, c.creado_por, u.nombre, c.periodo"
-    query += " ORDER BY c.fecha DESC"
-    
-    cursor.execute(query, *params)
-    
-    consolidaciones = []
-    for row in cursor.fetchall():
-        consolidaciones.append({
-            "id": row[0],
-            "nombre_archivo": row[1],
-            "ruta_archivo": row[2],
-            "fecha": row[3],
-            "creado_por": row[4],
-            "creado_por_nombre": row[5],
-            "periodo": row[6],
-            "archivos_count": row[7]
-        })
-    
-    conn.close()
-    return consolidaciones
+
 
 @app.get("/consolidaciones/{consolidacion_id}/download")
 def descargar_consolidacion(
@@ -1373,13 +1159,6 @@ def descargar_consolidacion(
     
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Archivo físico no encontrado")
-    
-    registrar_log(
-        current_user["id"],
-        "descargar",
-        f"Consolidación ID {consolidacion_id}",
-        consolidacion_id=consolidacion_id
-    )
     
     return FileResponse(
         path=str(filepath),
